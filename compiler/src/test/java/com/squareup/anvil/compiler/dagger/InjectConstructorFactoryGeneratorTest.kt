@@ -2,6 +2,7 @@ package com.squareup.anvil.compiler.dagger
 
 import com.google.common.truth.Truth.assertThat
 import com.squareup.anvil.compiler.injectClass
+import com.squareup.anvil.compiler.internal.testing.AnvilCompilationMode
 import com.squareup.anvil.compiler.internal.testing.compileAnvil
 import com.squareup.anvil.compiler.internal.testing.createInstance
 import com.squareup.anvil.compiler.internal.testing.factoryClass
@@ -22,15 +23,22 @@ import org.junit.runners.Parameterized.Parameters
 import java.io.File
 import javax.inject.Provider
 
-@RunWith(Parameterized::class)
+@RunWith(value = Parameterized::class)
 class InjectConstructorFactoryGeneratorTest(
-  private val useDagger: Boolean
+  private val useDagger: Boolean,
+  private val mode: AnvilCompilationMode
 ) {
 
   companion object {
-    @Parameters(name = "Use Dagger: {0}")
-    @JvmStatic fun useDagger(): Collection<Any> {
-      return listOf(isFullTestRun(), false).distinct()
+
+    @Parameters(name = "Dagger: {0}, Mode: {1}")
+    @JvmStatic fun data() : List<Array<Any>> {
+      return listOf(
+        arrayOf(isFullTestRun(), AnvilCompilationMode.Embedded()),
+        arrayOf(isFullTestRun(), AnvilCompilationMode.Ksp()),
+        arrayOf(false, AnvilCompilationMode.Embedded()),
+        arrayOf(false, AnvilCompilationMode.Ksp()),
+      )
     }
   }
 
@@ -2742,6 +2750,7 @@ public final class InjectClass_Factory implements Factory<InjectClass> {
     // Many constructor parameters are unused.
     allWarningsAsErrors = false,
     previousCompilationResult = previousCompilationResult,
-    block = block
+    block = block,
+    mode = mode
   )
 }
