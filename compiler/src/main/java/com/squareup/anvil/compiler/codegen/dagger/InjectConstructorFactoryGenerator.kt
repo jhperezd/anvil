@@ -1,12 +1,20 @@
 package com.squareup.anvil.compiler.codegen.dagger
 
 import com.google.auto.service.AutoService
+import com.google.devtools.ksp.processing.Resolver
+import com.google.devtools.ksp.processing.SymbolProcessorEnvironment
+import com.google.devtools.ksp.processing.SymbolProcessorProvider
+import com.google.devtools.ksp.symbol.KSAnnotated
+import com.google.devtools.ksp.symbol.KSClassDeclaration
+import com.squareup.anvil.compiler.api.AnvilApplicabilityChecker
 import com.squareup.anvil.compiler.api.AnvilContext
 import com.squareup.anvil.compiler.api.CodeGenerator
 import com.squareup.anvil.compiler.api.GeneratedFile
 import com.squareup.anvil.compiler.api.createGeneratedFile
 import com.squareup.anvil.compiler.codegen.PrivateCodeGenerator
 import com.squareup.anvil.compiler.codegen.injectConstructor
+import com.squareup.anvil.compiler.codegen.ksp.AnvilSymbolProcessor
+import com.squareup.anvil.compiler.codegen.ksp.AnvilSymbolProcessorProvider
 import com.squareup.anvil.compiler.injectFqName
 import com.squareup.anvil.compiler.internal.asClassName
 import com.squareup.anvil.compiler.internal.buildFile
@@ -30,165 +38,185 @@ import org.jetbrains.kotlin.descriptors.ModuleDescriptor
 import org.jetbrains.kotlin.psi.KtFile
 import java.io.File
 
-@AutoService(CodeGenerator::class)
-internal class InjectConstructorFactoryGenerator : PrivateCodeGenerator() {
-
+internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
   override fun isApplicable(context: AnvilContext) = context.generateFactories
 
-  override fun generateCodePrivate(
-    codeGenDir: File,
-    module: ModuleDescriptor,
-    projectFiles: Collection<KtFile>
-  ) {
-    projectFiles
-      .classAndInnerClassReferences(module)
-      .forEach { clazz ->
-        clazz.constructors
-          .injectConstructor()
-          ?.takeIf { it.isAnnotatedWith(injectFqName) }
-          ?.let {
-            generateFactoryClass(codeGenDir, clazz, it)
-          }
-      }
+  internal class KspGenerator(
+    override val env: SymbolProcessorEnvironment,
+  ) : AnvilSymbolProcessor() {
+
+    @AutoService(SymbolProcessorProvider::class)
+    class Provider : AnvilSymbolProcessorProvider(InjectConstructorFactoryGenerator, ::KspGenerator)
+
+    override fun processChecked(resolver: Resolver): List<KSAnnotated> {
+      resolver.getSymbolsWithAnnotation(injectFqName.toString())
+        .forEach { item ->
+          env.logger.info("Printing: ", item)
+        }
+      return emptyList()
+    }
   }
 
-  private fun generateFactoryClass(
-    codeGenDir: File,
-    clazz: ClassReference.Psi,
-    constructor: MemberFunctionReference.Psi
-  ): GeneratedFile {
-    val classId = clazz.generateClassName(suffix = "_Factory")
+  @AutoService(CodeGenerator::class)
+  internal class EmbeddedGenerator : PrivateCodeGenerator() {
 
-    val packageName = classId.packageFqName.safePackageString()
-    val className = classId.relativeClassName.asString()
-
-    val constructorParameters = constructor.parameters.mapToConstructorParameters()
-    val memberInjectParameters = clazz.memberInjectParameters()
-
-    val allParameters = constructorParameters + memberInjectParameters
-
-    val typeParameters = clazz.typeParameters
-
-    val factoryClass = classId.asClassName()
-    val factoryClassParameterized = factoryClass.optionallyParameterizedBy(typeParameters)
-    val classType = clazz.asClassName().optionallyParameterizedBy(typeParameters)
-
-    val content = FileSpec.buildFile(packageName, className) {
-      val canGenerateAnObject = allParameters.isEmpty() && typeParameters.isEmpty()
-      val classBuilder = if (canGenerateAnObject) {
-        TypeSpec.objectBuilder(factoryClass)
-      } else {
-        TypeSpec.classBuilder(factoryClass)
-      }
-      typeParameters.forEach { classBuilder.addTypeVariable(it.typeVariableName) }
-
-      classBuilder
-        .addSuperinterface(Factory::class.asClassName().parameterizedBy(classType))
-        .apply {
-          if (allParameters.isNotEmpty()) {
-            primaryConstructor(
-              FunSpec.constructorBuilder()
-                .apply {
-                  allParameters.forEach { parameter ->
-                    addParameter(parameter.name, parameter.providerTypeName)
-                  }
-                }
-                .build()
-            )
-
-            allParameters.forEach { parameter ->
-              addProperty(
-                PropertySpec.builder(parameter.name, parameter.providerTypeName)
-                  .initializer(parameter.name)
-                  .addModifiers(PRIVATE)
-                  .build()
-              )
+    override fun isApplicable(context: AnvilContext) =
+      InjectConstructorFactoryGenerator.isApplicable(context)
+    override fun generateCodePrivate(
+      codeGenDir: File,
+      module: ModuleDescriptor,
+      projectFiles: Collection<KtFile>
+    ) {
+      projectFiles
+        .classAndInnerClassReferences(module)
+        .forEach { clazz ->
+          clazz.constructors
+            .injectConstructor()
+            ?.takeIf { it.isAnnotatedWith(injectFqName) }
+            ?.let {
+              generateFactoryClass(codeGenDir, clazz, it)
             }
-          }
         }
-        .addFunction(
-          FunSpec.builder("get")
-            .addModifiers(OVERRIDE)
-            .returns(classType)
-            .apply {
-              val newInstanceArgumentList = constructorParameters.asArgumentList(
-                asProvider = true,
-                includeModule = false
-              )
+    }
 
-              if (memberInjectParameters.isEmpty()) {
-                addStatement("return newInstance($newInstanceArgumentList)")
-              } else {
-                val instanceName = "instance"
-                addStatement("val $instanceName = newInstance($newInstanceArgumentList)")
-                addMemberInjection(memberInjectParameters, instanceName)
-                addStatement("return $instanceName")
-              }
-            }
-            .build()
-        )
-        .apply {
-          val builder = if (canGenerateAnObject) this else TypeSpec.companionObjectBuilder()
-          builder
-            .addFunction(
-              FunSpec.builder("create")
-                .jvmStatic()
-                .apply {
-                  if (typeParameters.isNotEmpty()) {
-                    addTypeVariables(typeParameters.map { it.typeVariableName })
-                  }
-                  if (canGenerateAnObject) {
-                    addStatement("return this")
-                  } else {
+    private fun generateFactoryClass(
+      codeGenDir: File,
+      clazz: ClassReference.Psi,
+      constructor: MemberFunctionReference.Psi
+    ): GeneratedFile {
+      val classId = clazz.generateClassName(suffix = "_Factory")
+
+      val packageName = classId.packageFqName.safePackageString()
+      val className = classId.relativeClassName.asString()
+
+      val constructorParameters = constructor.parameters.mapToConstructorParameters()
+      val memberInjectParameters = clazz.memberInjectParameters()
+
+      val allParameters = constructorParameters + memberInjectParameters
+
+      val typeParameters = clazz.typeParameters
+
+      val factoryClass = classId.asClassName()
+      val factoryClassParameterized = factoryClass.optionallyParameterizedBy(typeParameters)
+      val classType = clazz.asClassName().optionallyParameterizedBy(typeParameters)
+
+      val content = FileSpec.buildFile(packageName, className) {
+        val canGenerateAnObject = allParameters.isEmpty() && typeParameters.isEmpty()
+        val classBuilder = if (canGenerateAnObject) {
+          TypeSpec.objectBuilder(factoryClass)
+        } else {
+          TypeSpec.classBuilder(factoryClass)
+        }
+        typeParameters.forEach { classBuilder.addTypeVariable(it.typeVariableName) }
+
+        classBuilder
+          .addSuperinterface(Factory::class.asClassName().parameterizedBy(classType))
+          .apply {
+            if (allParameters.isNotEmpty()) {
+              primaryConstructor(
+                FunSpec.constructorBuilder()
+                  .apply {
                     allParameters.forEach { parameter ->
                       addParameter(parameter.name, parameter.providerTypeName)
                     }
-
-                    val argumentList = allParameters.asArgumentList(
-                      asProvider = false,
-                      includeModule = false
-                    )
-
-                    addStatement(
-                      "return %T($argumentList)",
-                      factoryClassParameterized
-                    )
                   }
-                }
-                .returns(factoryClassParameterized)
-                .build()
-            )
-            .addFunction(
-              FunSpec.builder("newInstance")
-                .jvmStatic()
-                .apply {
-                  if (typeParameters.isNotEmpty()) {
-                    addTypeVariables(typeParameters.map { it.typeVariableName })
-                  }
-                  constructorParameters.forEach { parameter ->
-                    addParameter(
-                      name = parameter.name,
-                      type = parameter.originalTypeName
-                    )
-                  }
-                  val argumentsWithoutModule = constructorParameters.joinToString { it.name }
+                  .build()
+              )
 
-                  addStatement("return %T($argumentsWithoutModule)", classType)
-                }
-                .returns(classType)
-                .build()
-            )
-            .build()
-            .let {
-              if (!canGenerateAnObject) {
-                addType(it)
+              allParameters.forEach { parameter ->
+                addProperty(
+                  PropertySpec.builder(parameter.name, parameter.providerTypeName)
+                    .initializer(parameter.name)
+                    .addModifiers(PRIVATE)
+                    .build()
+                )
               }
             }
-        }
-        .build()
-        .let { addType(it) }
-    }
+          }
+          .addFunction(
+            FunSpec.builder("get")
+              .addModifiers(OVERRIDE)
+              .returns(classType)
+              .apply {
+                val newInstanceArgumentList = constructorParameters.asArgumentList(
+                  asProvider = true,
+                  includeModule = false
+                )
 
-    return createGeneratedFile(codeGenDir, packageName, className, content)
+                if (memberInjectParameters.isEmpty()) {
+                  addStatement("return newInstance($newInstanceArgumentList)")
+                } else {
+                  val instanceName = "instance"
+                  addStatement("val $instanceName = newInstance($newInstanceArgumentList)")
+                  addMemberInjection(memberInjectParameters, instanceName)
+                  addStatement("return $instanceName")
+                }
+              }
+              .build()
+          )
+          .apply {
+            val builder = if (canGenerateAnObject) this else TypeSpec.companionObjectBuilder()
+            builder
+              .addFunction(
+                FunSpec.builder("create")
+                  .jvmStatic()
+                  .apply {
+                    if (typeParameters.isNotEmpty()) {
+                      addTypeVariables(typeParameters.map { it.typeVariableName })
+                    }
+                    if (canGenerateAnObject) {
+                      addStatement("return this")
+                    } else {
+                      allParameters.forEach { parameter ->
+                        addParameter(parameter.name, parameter.providerTypeName)
+                      }
+
+                      val argumentList = allParameters.asArgumentList(
+                        asProvider = false,
+                        includeModule = false
+                      )
+
+                      addStatement(
+                        "return %T($argumentList)",
+                        factoryClassParameterized
+                      )
+                    }
+                  }
+                  .returns(factoryClassParameterized)
+                  .build()
+              )
+              .addFunction(
+                FunSpec.builder("newInstance")
+                  .jvmStatic()
+                  .apply {
+                    if (typeParameters.isNotEmpty()) {
+                      addTypeVariables(typeParameters.map { it.typeVariableName })
+                    }
+                    constructorParameters.forEach { parameter ->
+                      addParameter(
+                        name = parameter.name,
+                        type = parameter.originalTypeName
+                      )
+                    }
+                    val argumentsWithoutModule = constructorParameters.joinToString { it.name }
+
+                    addStatement("return %T($argumentsWithoutModule)", classType)
+                  }
+                  .returns(classType)
+                  .build()
+              )
+              .build()
+              .let {
+                if (!canGenerateAnObject) {
+                  addType(it)
+                }
+              }
+          }
+          .build()
+          .let { addType(it) }
+      }
+
+      return createGeneratedFile(codeGenDir, packageName, className, content)
+    }
   }
 }

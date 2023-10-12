@@ -35,8 +35,8 @@ class InjectConstructorFactoryGeneratorTest(
     @JvmStatic fun data() : List<Array<Any>> {
       return listOf(
         arrayOf(isFullTestRun(), AnvilCompilationMode.Embedded()),
-        arrayOf(isFullTestRun(), AnvilCompilationMode.Ksp()),
         arrayOf(false, AnvilCompilationMode.Embedded()),
+        arrayOf(isFullTestRun(), AnvilCompilationMode.Ksp()),
         arrayOf(false, AnvilCompilationMode.Ksp()),
       )
     }
