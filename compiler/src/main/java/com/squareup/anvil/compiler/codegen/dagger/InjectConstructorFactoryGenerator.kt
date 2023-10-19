@@ -1,7 +1,6 @@
 package com.squareup.anvil.compiler.codegen.dagger
 
 import com.google.auto.service.AutoService
-import com.google.devtools.ksp.containingFile
 import com.google.devtools.ksp.processing.Resolver
 import com.google.devtools.ksp.processing.SymbolProcessorEnvironment
 import com.google.devtools.ksp.processing.SymbolProcessorProvider
@@ -205,9 +204,18 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
           }
         }
         .forEach { item -> //Item = KSFunctionDeclarationImpl, not KSClassDeclaration.
-          val clazz = item.parent as KSClassDeclaration//KSClassDeclarationImpl -> getClassDeclarationByName(name KSName)
-          //val tmp2 = clazz.
-          //env.logger.info("Printing: ", tmp1) // ktDeclaration = PRIMARY_CONSTRUCTOR, containingFile = Source0.kt, parentDeclaration & parent = InjectClass
+          //KSClassDeclarationImpl -> getClassDeclarationByName(name KSName)
+          //ksClassDeclaration.parentDeclaration
+          val clazz = item.parent as KSClassDeclaration
+          val parameters = item.parameters
+          val properties = clazz.getAllProperties()
+          val typeparameters = clazz.typeParameters
+
+          // parameters -> 1 "factory" matching dagger true, ksp. Note this is an arrayList of KSValueParameterImpl, so we need to iterate on it.
+          // properties -> 1 "factory", This is a TransformingSequence -> FilteringSequence -> ArrayList -> PropertyDescriptorImpl
+
+          // ksClassDeclaration.typeParameters
+          //Need to get de equivalent of: constructor: MemberFunctionReference.Psi
           val spec = gFC2(clazz.toClassName())
 
           spec.writeTo(
@@ -262,7 +270,7 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
       val packageName = classId.packageFqName.safePackageString()
       val className = classId.relativeClassName.asString()
 
-      val constructorParameters = constructor.parameters.mapToConstructorParameters()
+      val constructorParameters = constructor.parameters.mapToConstructorParameters() // ArrayList of ConstructorParameter
       val memberInjectParameters = clazz.memberInjectParameters()
 
       val allParameters = constructorParameters + memberInjectParameters
