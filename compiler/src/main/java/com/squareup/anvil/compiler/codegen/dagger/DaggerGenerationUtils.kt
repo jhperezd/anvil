@@ -1,7 +1,12 @@
 package com.squareup.anvil.compiler.codegen.dagger
 
+import com.google.devtools.ksp.symbol.KSClassDeclaration
+import com.google.devtools.ksp.symbol.KSType
+import com.google.devtools.ksp.symbol.KSTypeArgument
+import com.google.devtools.ksp.symbol.KSTypeReference
 import com.google.devtools.ksp.symbol.KSValueParameter
 import com.squareup.anvil.compiler.assistedFqName
+import com.squareup.anvil.compiler.codegen.ksp.isAnnotationPresent
 import com.squareup.anvil.compiler.daggerDoubleCheckFqNameString
 import com.squareup.anvil.compiler.daggerLazyFqName
 import com.squareup.anvil.compiler.injectFqName
@@ -21,17 +26,21 @@ import com.squareup.anvil.compiler.internal.reference.asClassName
 import com.squareup.anvil.compiler.internal.reference.generateClassName
 import com.squareup.anvil.compiler.internal.withJvmSuppressWildcardsIfNeeded
 import com.squareup.anvil.compiler.jvmFieldFqName
+import com.squareup.anvil.compiler.jvmSuppressWildcardsFqName
 import com.squareup.anvil.compiler.providerFqName
 import com.squareup.kotlinpoet.ClassName
 import com.squareup.kotlinpoet.FunSpec
+import com.squareup.kotlinpoet.INT
 import com.squareup.kotlinpoet.ParameterizedTypeName
 import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
 import com.squareup.kotlinpoet.TypeName
 import com.squareup.kotlinpoet.asClassName
-import com.squareup.kotlinpoet.ParameterSpec
-import com.squareup.kotlinpoet.typeNameOf
+import com.squareup.kotlinpoet.jvm.jvmSuppressWildcards
+import com.squareup.kotlinpoet.ksp.toTypeName
+import com.squareup.kotlinpoet.ksp.toTypeVariableName
 import dagger.Lazy
 import dagger.internal.ProviderOfLazy
+import org.jetbrains.kotlin.ir.backend.js.lower.validateIsExternal
 import javax.inject.Provider
 
 internal fun TypeName.wrapInProvider(): ParameterizedTypeName {
@@ -47,9 +56,14 @@ internal fun List<ParameterReference>.mapToConstructorParameters(): List<Constru
     acc + callableReference.toConstructorParameter(callableReference.name.uniqueParameterName(acc))
   }
 }
+internal fun List<KSValueParameter>.mapKSPToConstructorParameters(): List<ConstructorParameter> {
+  return fold(listOf()) { acc, callableReference ->
+    acc + callableReference.toConstructorParameter(callableReference.name!!.asString().uniqueParameterName(acc))
+  }
+}
 
 private fun ParameterReference.toConstructorParameter(
-  uniqueName: String
+  uniqueName: String,
 ): ConstructorParameter {
   val type = type()
 
@@ -85,38 +99,37 @@ private fun ParameterReference.toConstructorParameter(
   )
 }
 
-internal fun List<KSValueParameter>.mapToConstructorParameters(): List<ConstructorParameter> {
-  return fold(listOf()) { acc, callableReference ->
-    acc + callableReference.toConstructorParameter(callableReference.name.toString().uniqueParameterName(acc))
-  }
-}
-
 private fun KSValueParameter.toConstructorParameter(
   uniqueName: String
 ): ConstructorParameter {
   val type = type.resolve()
 
-  val isWrappedInProvider = type.asClassReferenceOrNull()?.fqName == providerFqName
-  val isWrappedInLazy = type.asClassReferenceOrNull()?.fqName == daggerLazyFqName
+  //val typeArguments: List<KSTypeReference?> = type.arguments.map {it.type}
+  val typeReferences: List<KSTypeArgument> = type.arguments
+
+  val isWrappedInProvider = type.declaration.qualifiedName?.asString() == providerFqName.asString()
+  val isWrappedInLazy = type.declaration.qualifiedName?.asString() == daggerLazyFqName.asString()
   val isLazyWrappedInProvider = isWrappedInProvider &&
-    type.unwrappedTypes.first().asClassReferenceOrNull()?.fqName == daggerLazyFqName
+    typeReferences.firstOrNull()?.type?.resolve()?.declaration?.qualifiedName?.asString() == daggerLazyFqName.asString()
 
   val typeName = when {
-    isLazyWrappedInProvider -> type.unwrappedTypes.first().unwrappedTypes.first()
-    isWrappedInProvider || isWrappedInLazy -> type.unwrappedTypes.first()
-    else -> type
-  }.asTypeName().withJvmSuppressWildcardsIfNeeded(this, type)
+    isLazyWrappedInProvider -> typeReferences.firstOrNull()?.type?.resolve()?.arguments?.map{it.type}?.firstOrNull()!!.toTypeName()
+    isWrappedInProvider || isWrappedInLazy -> typeReferences.firstOrNull()!!.toTypeName()
+    else -> type.toTypeName()
+  }.withJvmSuppressWildcardsIfNeededKSP(this, type)
 
-  val assistedAnnotation = annotations.singleOrNull { it.fqName == assistedFqName }
+  val assistedAnnotation = this.annotations.singleOrNull() { it.shortName.toString() == assistedFqName.toString()}
 
+  /*
   val assistedIdentifier = assistedAnnotation
     ?.argumentAt("value", 0)
     ?.value()
     ?: ""
+   */
 
   return ConstructorParameter(
     name = uniqueName,
-    originalName = name,
+    originalName = name!!.asString(),
     typeName = typeName,
     providerTypeName = typeName.wrapInProvider(),
     lazyTypeName = typeName.wrapInLazy(),
@@ -124,51 +137,31 @@ private fun KSValueParameter.toConstructorParameter(
     isWrappedInLazy = isWrappedInLazy,
     isLazyWrappedInProvider = isLazyWrappedInProvider,
     isAssisted = assistedAnnotation != null,
-    assistedIdentifier = assistedIdentifier
+    assistedIdentifier = "" //TODO this should be assistedIdentifier
   )
 }
 
-internal fun List<ParameterSpec>.mapToConstructorParameters(): List<ConstructorParameter> {
-  return fold(listOf()) { acc, callableReference ->
-    acc + callableReference.toConstructorParameter(callableReference.name.uniqueParameterName(acc))
+fun TypeName.withJvmSuppressWildcardsIfNeededKSP(
+  valueParameter: KSValueParameter,
+  type: KSType
+): TypeName {
+  // If the parameter is annotated with @JvmSuppressWildcards, then add the annotation
+  // to our type so that this information is forwarded when our Factory is compiled.
+  val hasJvmSuppressWildcards = valueParameter.isAnnotationPresent(jvmSuppressWildcardsFqName.asString())
+
+  // Add the @JvmSuppressWildcards annotation even for simple generic return types like
+  // Set<String>. This avoids some edge cases where Dagger chokes.
+  // reference for KSP: https://github.com/google/ksp/issues/12
+  val isGenericType = type.declaration.typeParameters.isNotEmpty()
+
+  // Same for functions.
+  val isFunctionType = type.isFunctionType
+
+  return when {
+    hasJvmSuppressWildcards || isGenericType -> this.jvmSuppressWildcards()
+    isFunctionType -> this.jvmSuppressWildcards()
+    else -> this
   }
-}
-
-private fun ParameterSpec.toConstructorParameter(
-  uniqueName: String
-): ConstructorParameter {
-  val type = type
-
-  val isWrappedInProvider = type.asClassReferenceOrNull()?.fqName == providerFqName
-  val isWrappedInLazy = type.asClassReferenceOrNull()?.fqName == daggerLazyFqName
-  val isLazyWrappedInProvider = isWrappedInProvider &&
-    type.unwrappedTypes.first().asClassReferenceOrNull()?.fqName == daggerLazyFqName
-
-  val typeName = when {
-    isLazyWrappedInProvider -> type.unwrappedTypes.first().unwrappedTypes.first()
-    isWrappedInProvider || isWrappedInLazy -> type.unwrappedTypes.first()
-    else -> type
-  }.asTypeName().withJvmSuppressWildcardsIfNeeded(this, type)
-
-  val assistedAnnotation = annotations.singleOrNull { it.fqName == assistedFqName }
-
-  val assistedIdentifier = assistedAnnotation
-    ?.argumentAt("value", 0)
-    ?.value()
-    ?: ""
-
-  return ConstructorParameter(
-    name = uniqueName,
-    originalName = name,
-    typeName = typeName,
-    providerTypeName = typeName.wrapInProvider(),
-    lazyTypeName = typeName.wrapInLazy(),
-    isWrappedInProvider = isWrappedInProvider,
-    isWrappedInLazy = isWrappedInLazy,
-    isLazyWrappedInProvider = isLazyWrappedInProvider,
-    isAssisted = assistedAnnotation != null,
-    assistedIdentifier = assistedIdentifier
-  )
 }
 
 internal fun FunSpec.Builder.addMemberInjection(

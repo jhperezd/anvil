@@ -7,7 +7,10 @@ import com.google.devtools.ksp.processing.SymbolProcessorProvider
 import com.google.devtools.ksp.symbol.KSAnnotated
 import com.google.devtools.ksp.symbol.KSClassDeclaration
 import com.google.devtools.ksp.symbol.KSFunctionDeclaration
+import com.google.devtools.ksp.symbol.KSType
 import com.google.devtools.ksp.symbol.KSTypeReference
+import com.google.devtools.ksp.symbol.KSValueParameter
+import com.squareup.anvil.annotations.ExperimentalAnvilApi
 import com.squareup.anvil.compiler.api.AnvilApplicabilityChecker
 import com.squareup.anvil.compiler.api.AnvilContext
 import com.squareup.anvil.compiler.api.CodeGenerator
@@ -33,16 +36,15 @@ import com.squareup.kotlinpoet.FileSpec
 import com.squareup.kotlinpoet.FunSpec
 import com.squareup.kotlinpoet.KModifier.OVERRIDE
 import com.squareup.kotlinpoet.KModifier.PRIVATE
-import com.squareup.kotlinpoet.ParameterSpec
 import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
 import com.squareup.kotlinpoet.PropertySpec
+import com.squareup.kotlinpoet.TypeName
 import com.squareup.kotlinpoet.TypeSpec
 import com.squareup.kotlinpoet.TypeVariableName
 import com.squareup.kotlinpoet.asClassName
-import com.squareup.kotlinpoet.asTypeName
 import com.squareup.kotlinpoet.jvm.jvmStatic
 import com.squareup.kotlinpoet.ksp.toClassName
-import com.squareup.kotlinpoet.ksp.toTypeName
+import com.squareup.kotlinpoet.ksp.toTypeVariableName
 import com.squareup.kotlinpoet.ksp.writeTo
 import dagger.internal.Factory
 import org.jetbrains.kotlin.descriptors.ModuleDescriptor
@@ -221,21 +223,18 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
           // properties -> 1 "factory", This is a TransformingSequence -> FilteringSequence -> ArrayList -> PropertyDescriptorImpl
 
           //Generate TypeParameters
-          val tp = typeParameters.map { kstTypeParameter ->
+          val tp = typeParameters.map { it.toTypeVariableName()
+            /*kstTypeParameter ->
             val typeParameterName = kstTypeParameter.name.asString()
             val bounds = kstTypeParameter.bounds.map { kstTypeReference ->
               createTypeVariableNameFRomKSType(kstTypeReference)
             }
             TypeVariableName(typeParameterName, bounds.toList())
+             */
           }
 
           //Generate Parameter (AKA ConstructorParameters)
-          val cp = valueParameters.mapNotNull { ksValueParameter ->
-            val parameterName = ksValueParameter.name?.asString() ?: ""
-            val parameterType = ksValueParameter.type.toTypeName()
-            ParameterSpec.builder(parameterName, parameterType)
-          }
-          //val cp = parameterSpecs.
+          val cp = valueParameters.mapKSPToConstructorParameters()
           //constructor.parameters.mapToConstructorParameters()
 
           val spec = gFC2(clazz.toClassName(), tp, cp)
