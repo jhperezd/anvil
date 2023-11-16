@@ -72,7 +72,11 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
 
     val allParameters = constructorParameters + memberInjectParameters
     val factoryClass = classId.asClassName()
-    val factoryClassParameterized = factoryClass.parameterizedBy(typeParameters)
+    val factoryClassParameterized =
+      if(typeParameters.isNotEmpty()) factoryClass.parameterizedBy(typeParameters) else factoryClass
+
+    //val factoryClassParameterized = factoryClass.optionallyParameterizedBy(typeParameters)
+    //val classType = clazz.asClassName().optionallyParameterizedBy(typeParameters)
 
     return FileSpec.createAnvilSpec(packageName, className) {
       val canGenerateAnObject = allParameters.isEmpty() && typeParameters.isEmpty()
@@ -216,7 +220,7 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
           //ksClassDeclaration.parentDeclaration
           val clazz = item.parent as KSClassDeclaration
           val valueParameters = item.parameters //KSValueParameterImpl list
-          val properties = clazz.getAllProperties()
+          //val properties = clazz.getAllProperties() //
           val typeParameters = clazz.typeParameters //KSTypeParameterImpl list
 
           // parameters -> 1 "factory" matching dagger true, ksp. Note this is an arrayList of KSValueParameterImpl, so we need to iterate on it.
@@ -236,6 +240,9 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
           //Generate Parameter (AKA ConstructorParameters)
           val cp = valueParameters.mapKSPToConstructorParameters()
           //constructor.parameters.mapToConstructorParameters()
+
+          //Generate Property (AKA MemberInjectParameters)
+          val mip = clazz.memberInjectParameters()
 
           val spec = gFC2(clazz.toClassName(), tp, cp)
 

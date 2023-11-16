@@ -1,12 +1,16 @@
 package com.squareup.anvil.compiler.codegen.dagger
 
+import com.google.devtools.ksp.getVisibility
 import com.google.devtools.ksp.symbol.KSClassDeclaration
+import com.google.devtools.ksp.symbol.KSPropertyDeclaration
+import com.google.devtools.ksp.symbol.Modifier
+import com.google.devtools.ksp.symbol.Visibility
+import com.squareup.anvil.compiler.assistedFqName
+import com.squareup.anvil.compiler.codegen.ksp.KspAnvilException
+import com.squareup.anvil.compiler.codegen.ksp.isAnnotationPresent
 import com.google.devtools.ksp.symbol.KSType
 import com.google.devtools.ksp.symbol.KSTypeArgument
-import com.google.devtools.ksp.symbol.KSTypeReference
 import com.google.devtools.ksp.symbol.KSValueParameter
-import com.squareup.anvil.compiler.assistedFqName
-import com.squareup.anvil.compiler.codegen.ksp.isAnnotationPresent
 import com.squareup.anvil.compiler.daggerDoubleCheckFqNameString
 import com.squareup.anvil.compiler.daggerLazyFqName
 import com.squareup.anvil.compiler.injectFqName
@@ -34,13 +38,13 @@ import com.squareup.kotlinpoet.INT
 import com.squareup.kotlinpoet.ParameterizedTypeName
 import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
 import com.squareup.kotlinpoet.TypeName
+import com.squareup.kotlinpoet.TypeVariableName
 import com.squareup.kotlinpoet.asClassName
 import com.squareup.kotlinpoet.jvm.jvmSuppressWildcards
 import com.squareup.kotlinpoet.ksp.toTypeName
 import com.squareup.kotlinpoet.ksp.toTypeVariableName
 import dagger.Lazy
 import dagger.internal.ProviderOfLazy
-import org.jetbrains.kotlin.ir.backend.js.lower.validateIsExternal
 import javax.inject.Provider
 
 internal fun TypeName.wrapInProvider(): ParameterizedTypeName {
@@ -102,21 +106,22 @@ private fun ParameterReference.toConstructorParameter(
 private fun KSValueParameter.toConstructorParameter(
   uniqueName: String
 ): ConstructorParameter {
-  val type = type.resolve()
+  val resolvedType = type.resolve()
+  val qualifiedTypeName = resolvedType.declaration.qualifiedName?.asString()
 
   //val typeArguments: List<KSTypeReference?> = type.arguments.map {it.type}
-  val typeReferences: List<KSTypeArgument> = type.arguments
+  val typeReferences: List<KSTypeArgument> = resolvedType.arguments
 
-  val isWrappedInProvider = type.declaration.qualifiedName?.asString() == providerFqName.asString()
-  val isWrappedInLazy = type.declaration.qualifiedName?.asString() == daggerLazyFqName.asString()
+  val isWrappedInProvider = qualifiedTypeName == providerFqName.asString()
+  val isWrappedInLazy = qualifiedTypeName == daggerLazyFqName.asString()
   val isLazyWrappedInProvider = isWrappedInProvider &&
     typeReferences.firstOrNull()?.type?.resolve()?.declaration?.qualifiedName?.asString() == daggerLazyFqName.asString()
 
   val typeName = when {
     isLazyWrappedInProvider -> typeReferences.firstOrNull()?.type?.resolve()?.arguments?.map{it.type}?.firstOrNull()!!.toTypeName()
     isWrappedInProvider || isWrappedInLazy -> typeReferences.firstOrNull()!!.toTypeName()
-    else -> type.toTypeName()
-  }.withJvmSuppressWildcardsIfNeededKSP(this, type)
+    else -> resolvedType.toTypeName()
+  }.withJvmSuppressWildcardsIfNeededKSP(this, resolvedType)
 
   val assistedAnnotation = this.annotations.singleOrNull() { it.shortName.toString() == assistedFqName.toString()}
 
@@ -228,6 +233,34 @@ private fun ClassReference.declaredMemberInjectParameters(
       )
     }
 }
+
+/**
+ * Returns all member-injected parameters for the receiver class *and any superclasses*.
+ *
+ * We use Psi whenever possible, to support generated code.
+ *
+ * Order is important. Dagger expects the properties of the most-upstream class to be listed first
+ * in a factory's constructor.
+ *
+ * Given the hierarchy:
+ * Impl -> Middle -> Base
+ * The order of dependencies in `Impl_Factory`'s constructor should be:
+ * Base -> Middle -> Impl
+ */
+internal fun KSClassDeclaration.memberInjectParameters(): List<MemberInjectParameter> {
+  return getAllProperties()
+    .filter { it.isAnnotationPresent(injectFqName.asString()) }
+    .filter { it.getVisibility() != Visibility.PRIVATE }
+    .fold(listOf()) { acc, property ->
+      val uniqueName = property.simpleName.asString().uniqueParameterName(acc)
+      acc + property.toMemberInjectParameter(
+        uniqueName = uniqueName,
+        implementingClass = this,
+      )
+    }
+}
+
+
 
 /**
  * Converts the parameter list to comma separated argument list that can be used to call other
@@ -372,6 +405,114 @@ private fun MemberPropertyReference.toMemberInjectParameter(
     qualifierAnnotationSpecs = qualifierAnnotations,
     injectedFieldSignature = fqName,
     resolvedProviderTypeName = resolvedTypeName?.wrapInProvider() ?: providerTypeName
+  )
+}
+
+private fun KSPropertyDeclaration.toMemberInjectParameter(
+  uniqueName: String,
+  implementingClass: KSClassDeclaration
+): MemberInjectParameter {
+  if (
+    !modifiers.contains(Modifier.LATEINIT) &&
+    !isAnnotationPresent(jvmFieldFqName.asString()) &&
+    setter?.isAnnotationPresent(injectFqName.asString()) != true
+  ) {
+    // Technically this works with Anvil and we could remove this check. But we prefer consistency
+    // with Dagger.
+    throw KspAnvilException(
+      node = this,
+      message = "Dagger does not support injection into private fields. Either use a " +
+        "'lateinit var' or '@JvmField'."
+    )
+  }
+
+  val originalName = simpleName.asString()
+  val resolvedType = type.resolve()
+  val qualifiedTypeName = resolvedType.declaration.qualifiedName?.asString()
+
+  val isWrappedInProvider = qualifiedTypeName == providerFqName.asString()
+  val isWrappedInLazy = qualifiedTypeName == daggerLazyFqName.asString()
+  val isLazyWrappedInProvider = isWrappedInProvider &&
+    typeParameters.first().qualifiedName?.asString() == daggerLazyFqName.asString()
+
+  val unwrappedType = when {
+    isLazyWrappedInProvider -> typeParameters.first().typeParameters.first().toTypeVariableName()
+    isWrappedInProvider || isWrappedInLazy -> typeParameters.first().toTypeVariableName()
+    else -> resolvedType.toTypeName()
+  }
+  /*
+  val typeName = unwrappedType.withJvmSuppressWildcardsIfNeeded(this, type)
+  val resolvedTypeName = if (unwrappedType.isGenericExcludingTypeAliases()) {
+    unwrappedType.asClassReferenceOrNull()
+      ?.asClassName()
+      ?.optionallyParameterizedByNames(
+        unwrappedType.unwrappedTypes.mapNotNull {
+          it.resolveGenericTypeNameOrNull(implementingClass)
+        }
+      )
+      ?.withJvmSuppressWildcardsIfNeeded(this, unwrappedType)
+  } else {
+    null
+  }
+
+  val assistedAnnotation = annotations.singleOrNull { it.fqName == assistedFqName }
+
+  val assistedIdentifier = assistedAnnotation
+    ?.argumentAt("value", 0)
+    ?.value()
+    ?: ""
+
+  val memberInjectorClassName = declaringClass
+    .generateClassName(separator = "_", suffix = "_MembersInjector")
+    .relativeClassName
+    .asString()
+
+  val memberInjectorClass = ClassName(
+    declaringClass.packageFqName.asString(), memberInjectorClassName
+  )
+
+  val isSetterInjected = this.setterAnnotations.any { it.fqName == injectFqName }
+
+  // setter delegates require a "set" prefix for their inject function
+  val accessName = if (isSetterInjected) {
+    "set${originalName.capitalize()}"
+  } else {
+    originalName
+  }
+
+  val qualifierAnnotations = annotations
+    .filter { it.isQualifier() }
+    .map { it.toAnnotationSpec() }
+
+  val providerTypeName = typeName.wrapInProvider()
+   */
+
+  val assistedAnnotation = null
+  val assistedIdentifier = ""
+  val memberInjectorClass = null
+  val isSetterInjected = null
+  val qualifierAnnotations = null
+  val fqName = null
+  val resolvedTypeName = null
+  val providerTypeName = null
+
+  return MemberInjectParameter(
+    name = uniqueName,
+    originalName = originalName,
+    typeName = INT,
+    providerTypeName = providerTypeName!!,
+    lazyTypeName = INT.wrapInLazy(),
+    isWrappedInProvider = isWrappedInProvider,
+    isWrappedInLazy = isWrappedInLazy,
+    isLazyWrappedInProvider = isLazyWrappedInProvider,
+    isAssisted = assistedAnnotation != null,
+    assistedIdentifier = assistedIdentifier,
+    memberInjectorClassName = memberInjectorClass!!,
+    isSetterInjected = isSetterInjected!!,
+    accessName = "accessName",
+    qualifierAnnotationSpecs = qualifierAnnotations!!,
+    injectedFieldSignature = fqName!!,
+    resolvedProviderTypeName = resolvedTypeName?.wrapInProvider() ?: providerTypeName!!
   )
 }
 

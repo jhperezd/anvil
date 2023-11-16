@@ -1,5 +1,8 @@
 package com.squareup.anvil.compiler.codegen.ksp
 
+import com.google.devtools.ksp.symbol.KSClassDeclaration
+import com.google.devtools.ksp.symbol.KSTypeAlias
+import com.google.devtools.ksp.symbol.KSTypeReference
 import com.google.devtools.ksp.symbol.KSAnnotated
 import com.google.devtools.ksp.symbol.KSAnnotation
 import kotlin.reflect.KClass
@@ -33,3 +36,21 @@ internal fun KSAnnotated.getKSAnnotationsByQualifiedName(
 
 internal fun KSAnnotated.isAnnotationPresent(qualifiedName: String): Boolean =
   getKSAnnotationsByQualifiedName(qualifiedName).firstOrNull() != null
+
+internal fun KSTypeAlias.findActualType(): KSClassDeclaration {
+  val resolvedType = this.type.resolve().declaration
+  return if (resolvedType is KSTypeAlias) {
+    resolvedType.findActualType()
+  } else {
+    resolvedType as KSClassDeclaration
+  }
+}
+
+internal fun KSTypeReference.findActualType(): KSClassDeclaration {
+  val resolvedType = this.resolve().declaration
+  return if (resolvedType is KSTypeAlias) {
+    resolvedType.findActualType()
+  } else {
+    resolvedType as KSClassDeclaration
+  }
+}
