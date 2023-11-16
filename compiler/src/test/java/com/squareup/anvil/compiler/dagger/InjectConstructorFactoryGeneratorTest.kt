@@ -3,6 +3,8 @@ package com.squareup.anvil.compiler.dagger
 import com.google.common.truth.Truth.assertThat
 import com.squareup.anvil.compiler.injectClass
 import com.squareup.anvil.compiler.internal.testing.AnvilCompilationMode
+import com.squareup.anvil.compiler.internal.testing.AnvilCompilationMode.Embedded
+import com.squareup.anvil.compiler.internal.testing.AnvilCompilationMode.Ksp
 import com.squareup.anvil.compiler.internal.testing.compileAnvil
 import com.squareup.anvil.compiler.internal.testing.createInstance
 import com.squareup.anvil.compiler.internal.testing.factoryClass
@@ -25,20 +27,20 @@ import javax.inject.Provider
 
 @RunWith(value = Parameterized::class)
 class InjectConstructorFactoryGeneratorTest(
-  private val useDagger: Boolean,
-  private val mode: AnvilCompilationMode
+  private val testCase: AnvilDaggerTestCase
 ) {
 
   companion object {
 
-    @Parameters(name = "Dagger: {0}, Mode: {1}")
-    @JvmStatic fun data() : List<Array<Any>> {
-      return listOf(
-        arrayOf(isFullTestRun(), AnvilCompilationMode.Embedded()),
-        arrayOf(false, AnvilCompilationMode.Embedded()),
-        arrayOf(isFullTestRun(), AnvilCompilationMode.Ksp()),
-        arrayOf(false, AnvilCompilationMode.Ksp()),
-      )
+    @Parameters(name = "{0}")
+    @JvmStatic fun testCases(): Collection<Any> {
+      return buildList {
+        if (isFullTestRun()) {
+          add(AnvilDaggerTestCase.UseDagger)
+        }
+        add(AnvilDaggerTestCase.UseAnvil(Embedded()))
+        add(AnvilDaggerTestCase.UseAnvil(Ksp()))
+      }
     }
   }
 
@@ -2745,12 +2747,12 @@ public final class InjectClass_Factory implements Factory<InjectClass> {
     block: JvmCompilationResult.() -> Unit = { }
   ): JvmCompilationResult = compileAnvil(
     sources = sources,
-    enableDaggerAnnotationProcessor = useDagger,
-    generateDaggerFactories = !useDagger,
+    enableDaggerAnnotationProcessor = testCase is AnvilDaggerTestCase.UseDagger,
+    generateDaggerFactories = testCase !is AnvilDaggerTestCase.UseDagger,
     // Many constructor parameters are unused.
     allWarningsAsErrors = false,
     previousCompilationResult = previousCompilationResult,
     block = block,
-    mode = mode
+    mode = (testCase as? AnvilDaggerTestCase.UseAnvil)?.mode ?: Embedded(),
   )
 }

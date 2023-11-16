@@ -64,19 +64,15 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
     val className = classId.relativeClassName.asString()
 
     // in progress, "empty" now coz of the test I am using to build this first
-    //val constructorParameters: List<ConstructorParameter> = emptyList()
     val memberInjectParameters: List<MemberInjectParameter> = arrayListOf()
-    //val typeParameters: List<TypeParameterReference.Psi> = emptyList()
-
-    val classType = originClass //original was: clazz.asClassName().optionallyParameterizedBy(typeParameters)
 
     val allParameters = constructorParameters + memberInjectParameters
     val factoryClass = classId.asClassName()
     val factoryClassParameterized =
       if(typeParameters.isNotEmpty()) factoryClass.parameterizedBy(typeParameters) else factoryClass
 
-    //val factoryClassParameterized = factoryClass.optionallyParameterizedBy(typeParameters)
-    //val classType = clazz.asClassName().optionallyParameterizedBy(typeParameters)
+    val classType =
+      if(typeParameters.isNotEmpty()) originClass.parameterizedBy(typeParameters) else originClass
 
     return FileSpec.createAnvilSpec(packageName, className) {
       val canGenerateAnObject = allParameters.isEmpty() && typeParameters.isEmpty()
@@ -286,8 +282,12 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
               val className = classId.relativeClassName.asString()
               //createGeneratedFile(codeGenDir, packageName, className, content)
 
-              //***val content2 = gFC2(clazz.asClassName())
-              //***createGeneratedFile(codeGenDir, packageName, className, content2.toString())
+              val typeParameters = clazz.typeParameters //TypeParameterReference.Psi list
+              //Generate TypeParameters
+              val tp = typeParameters.map { it.typeVariableName
+              }
+              val content2 = gFC2(clazz.asClassName(), tp, it.parameters.mapToConstructorParameters())
+              createGeneratedFile(codeGenDir, packageName, className, content2.toString())
 
             }
         }

@@ -119,7 +119,8 @@ private fun KSValueParameter.toConstructorParameter(
 
   val typeName = when {
     isLazyWrappedInProvider -> typeReferences.firstOrNull()?.type?.resolve()?.arguments?.map{it.type}?.firstOrNull()!!.toTypeName()
-    isWrappedInProvider || isWrappedInLazy -> typeReferences.firstOrNull()!!.toTypeName()
+    isWrappedInProvider || isWrappedInLazy -> resolvedType.declaration.typeParameters.firstOrNull()!!.toTypeVariableName()
+    //This didnt work before... typeReferences.firstOrNull()!!.toTypeName()
     else -> resolvedType.toTypeName()
   }.withJvmSuppressWildcardsIfNeededKSP(this, resolvedType)
 
