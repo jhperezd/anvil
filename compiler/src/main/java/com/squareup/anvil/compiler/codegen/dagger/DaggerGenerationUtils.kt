@@ -10,6 +10,7 @@ import com.squareup.anvil.compiler.codegen.ksp.KspAnvilException
 import com.squareup.anvil.compiler.codegen.ksp.isAnnotationPresent
 import com.google.devtools.ksp.symbol.KSType
 import com.google.devtools.ksp.symbol.KSTypeArgument
+import com.google.devtools.ksp.symbol.KSTypeParameter
 import com.google.devtools.ksp.symbol.KSValueParameter
 import com.squareup.anvil.compiler.daggerDoubleCheckFqNameString
 import com.squareup.anvil.compiler.daggerLazyFqName
@@ -121,7 +122,11 @@ private fun KSValueParameter.toConstructorParameter(
     isLazyWrappedInProvider -> typeReferences.firstOrNull()?.type?.resolve()?.arguments?.map{it.type}?.firstOrNull()!!.toTypeName()
     isWrappedInProvider || isWrappedInLazy -> resolvedType.declaration.typeParameters.firstOrNull()!!.toTypeVariableName()
     //This didnt work before... typeReferences.firstOrNull()!!.toTypeName()
-    else -> resolvedType.toTypeName()
+    else ->   try {
+      resolvedType.toTypeName()
+    } catch (e: Exception) {
+      (resolvedType.declaration as KSTypeParameter).toTypeVariableName()
+    }
   }.withJvmSuppressWildcardsIfNeededKSP(this, resolvedType)
 
   val assistedAnnotation = this.annotations.singleOrNull() { it.shortName.toString() == assistedFqName.toString()}
