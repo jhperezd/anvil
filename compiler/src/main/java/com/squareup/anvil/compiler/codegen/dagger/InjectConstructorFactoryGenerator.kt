@@ -58,13 +58,14 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
     originClass: ClassName,
     typeParameters: List<TypeVariableName>,
     constructorParameters: List<ConstructorParameter>,
+    memberInjectParameters: List<MemberInjectParameter>,
   ): FileSpec {
     val classId = originClass.generateClassName(suffix = "_Factory").asClassId()
     val packageName = originClass.packageName.safePackageString()
     val className = classId.relativeClassName.asString()
 
     // in progress, "empty" now coz of the test I am using to build this first
-    val memberInjectParameters: List<MemberInjectParameter> = arrayListOf()
+    //val memberInjectParameters: List<MemberInjectParameter> = arrayListOf()
 
     val allParameters = constructorParameters + memberInjectParameters
     val factoryClass = classId.asClassName()
@@ -240,7 +241,7 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
           //Generate Property (AKA MemberInjectParameters)
           val mip = clazz.memberInjectParameters()
 
-          val spec = gFC2(clazz.toClassName(), tp, cp)
+          val spec = gFC2(clazz.toClassName(), tp, cp, mip)
 
           spec.writeTo(
             env.codeGenerator,
@@ -286,7 +287,7 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
               //Generate TypeParameters
               val tp = typeParameters.map { it.typeVariableName
               }
-              val content2 = gFC2(clazz.asClassName(), tp, it.parameters.mapToConstructorParameters())
+              val content2 = gFC2(clazz.asClassName(), tp, it.parameters.mapToConstructorParameters(), clazz.memberInjectParameters())
               createGeneratedFile(codeGenDir, packageName, className, content2.toString())
 
             }
