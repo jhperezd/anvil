@@ -3,15 +3,16 @@ package com.squareup.anvil.compiler.codegen.dagger
 import com.google.devtools.ksp.getVisibility
 import com.google.devtools.ksp.symbol.KSClassDeclaration
 import com.google.devtools.ksp.symbol.KSPropertyDeclaration
+import com.google.devtools.ksp.symbol.KSType
+import com.google.devtools.ksp.symbol.KSTypeArgument
+import com.google.devtools.ksp.symbol.KSTypeParameter
+import com.google.devtools.ksp.symbol.KSValueParameter
 import com.google.devtools.ksp.symbol.Modifier
 import com.google.devtools.ksp.symbol.Visibility
 import com.squareup.anvil.compiler.assistedFqName
 import com.squareup.anvil.compiler.codegen.ksp.KspAnvilException
 import com.squareup.anvil.compiler.codegen.ksp.isAnnotationPresent
-import com.google.devtools.ksp.symbol.KSType
-import com.google.devtools.ksp.symbol.KSTypeArgument
-import com.google.devtools.ksp.symbol.KSTypeParameter
-import com.google.devtools.ksp.symbol.KSValueParameter
+import com.squareup.anvil.compiler.codegen.ksp.isQualifier
 import com.squareup.anvil.compiler.daggerDoubleCheckFqNameString
 import com.squareup.anvil.compiler.daggerLazyFqName
 import com.squareup.anvil.compiler.injectFqName
@@ -35,18 +36,19 @@ import com.squareup.anvil.compiler.jvmSuppressWildcardsFqName
 import com.squareup.anvil.compiler.providerFqName
 import com.squareup.kotlinpoet.ClassName
 import com.squareup.kotlinpoet.FunSpec
-import com.squareup.kotlinpoet.INT
 import com.squareup.kotlinpoet.ParameterizedTypeName
 import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
 import com.squareup.kotlinpoet.TypeName
-import com.squareup.kotlinpoet.TypeVariableName
 import com.squareup.kotlinpoet.asClassName
 import com.squareup.kotlinpoet.jvm.jvmSuppressWildcards
+import com.squareup.kotlinpoet.ksp.toAnnotationSpec
+import com.squareup.kotlinpoet.ksp.toClassName
 import com.squareup.kotlinpoet.ksp.toTypeName
 import com.squareup.kotlinpoet.ksp.toTypeVariableName
 import dagger.Lazy
 import dagger.internal.ProviderOfLazy
 import javax.inject.Provider
+import org.jetbrains.kotlin.name.FqName
 
 internal fun TypeName.wrapInProvider(): ParameterizedTypeName {
   return Provider::class.asClassName().parameterizedBy(this)
@@ -115,21 +117,35 @@ private fun KSValueParameter.toConstructorParameter(
 
   val isWrappedInProvider = qualifiedTypeName == providerFqName.asString()
   val isWrappedInLazy = qualifiedTypeName == daggerLazyFqName.asString()
-  val isLazyWrappedInProvider = isWrappedInProvider &&
-    typeReferences.firstOrNull()?.type?.resolve()?.declaration?.qualifiedName?.asString() == daggerLazyFqName.asString()
+  val isLazyWrappedInProvider =
+      isWrappedInProvider &&
+          typeReferences.firstOrNull()?.type?.resolve()?.declaration?.qualifiedName?.asString() ==
+              daggerLazyFqName.asString()
 
-  val typeName = when {
-    isLazyWrappedInProvider -> typeReferences.firstOrNull()?.type?.resolve()?.arguments?.map{it.type}?.firstOrNull()!!.toTypeName()
-    isWrappedInProvider || isWrappedInLazy -> resolvedType.declaration.typeParameters.firstOrNull()!!.toTypeVariableName()
-    //This didnt work before... typeReferences.firstOrNull()!!.toTypeName()
-    else ->   try {
-      resolvedType.toTypeName()
-    } catch (e: Exception) {
-      (resolvedType.declaration as KSTypeParameter).toTypeVariableName()
-    }
-  }.withJvmSuppressWildcardsIfNeededKSP(this, resolvedType)
+  val typeName =
+      when {
+        isLazyWrappedInProvider ->
+            typeReferences
+                .firstOrNull()
+                ?.type
+                ?.resolve()
+                ?.arguments
+                ?.map { it.type }
+                ?.firstOrNull()!!
+                .toTypeName()
+        isWrappedInProvider || isWrappedInLazy ->
+            resolvedType.declaration.typeParameters.firstOrNull()!!.toTypeVariableName()
+        // This didnt work before... typeReferences.firstOrNull()!!.toTypeName()
+        else ->
+            try {
+              resolvedType.toTypeName()
+            } catch (e: Exception) {
+              (resolvedType.declaration as KSTypeParameter).toTypeVariableName()
+            }
+      }.withJvmSuppressWildcardsIfNeededForValueParameter(this, resolvedType)
 
-  val assistedAnnotation = this.annotations.singleOrNull() { it.shortName.toString() == assistedFqName.toString()}
+  val assistedAnnotation =
+      this.annotations.singleOrNull() { it.shortName.toString() == assistedFqName.toString() }
 
   /*
   val assistedIdentifier = assistedAnnotation
@@ -152,13 +168,37 @@ private fun KSValueParameter.toConstructorParameter(
   )
 }
 
-fun TypeName.withJvmSuppressWildcardsIfNeededKSP(
-  valueParameter: KSValueParameter,
-  type: KSType
+fun TypeName.withJvmSuppressWildcardsIfNeededForValueParameter(
+    valueParameter: KSValueParameter,
+    type: KSType
 ): TypeName {
   // If the parameter is annotated with @JvmSuppressWildcards, then add the annotation
   // to our type so that this information is forwarded when our Factory is compiled.
-  val hasJvmSuppressWildcards = valueParameter.isAnnotationPresent(jvmSuppressWildcardsFqName.asString())
+  val hasJvmSuppressWildcards =
+      valueParameter.isAnnotationPresent(jvmSuppressWildcardsFqName.asString())
+
+  // Add the @JvmSuppressWildcards annotation even for simple generic return types like
+  // Set<String>. This avoids some edge cases where Dagger chokes.
+  // reference for KSP: https://github.com/google/ksp/issues/12
+  val isGenericType = type.declaration.typeParameters.isNotEmpty()
+
+  // Same for functions.
+  val isFunctionType = type.isFunctionType
+
+  return when {
+    hasJvmSuppressWildcards || isGenericType -> this.jvmSuppressWildcards()
+    isFunctionType -> this.jvmSuppressWildcards()
+    else -> this
+  }
+}
+
+fun TypeName.withJvmSuppressWildcardsIfNeededForPropertyDeclaration(
+    propertyDeclaration: KSPropertyDeclaration,
+    type: KSType
+): TypeName {
+  // If the parameter is annotated with @JvmSuppressWildcards, then add the annotation
+  // to our type so that this information is forwarded when our Factory is compiled.
+  val hasJvmSuppressWildcards = propertyDeclaration.isAnnotationPresent(jvmSuppressWildcardsFqName.asString())
 
   // Add the @JvmSuppressWildcards annotation even for simple generic return types like
   // Set<String>. This avoids some edge cases where Dagger chokes.
@@ -341,14 +381,16 @@ private fun MemberPropertyReference.toMemberInjectParameter(
 
   val isWrappedInProvider = type.asClassReferenceOrNull()?.fqName == providerFqName
   val isWrappedInLazy = type.asClassReferenceOrNull()?.fqName == daggerLazyFqName
-  val isLazyWrappedInProvider = isWrappedInProvider &&
-    type.unwrappedTypes.first().asClassReferenceOrNull()?.fqName == daggerLazyFqName
+  val isLazyWrappedInProvider =
+      isWrappedInProvider &&
+          type.unwrappedTypes.first().asClassReferenceOrNull()?.fqName == daggerLazyFqName
 
-  val unwrappedType = when {
-    isLazyWrappedInProvider -> type.unwrappedTypes.first().unwrappedTypes.first()
-    isWrappedInProvider || isWrappedInLazy -> type.unwrappedTypes.first()
-    else -> type
-  }
+  val unwrappedType =
+      when {
+        isLazyWrappedInProvider -> type.unwrappedTypes.first().unwrappedTypes.first()
+        isWrappedInProvider || isWrappedInLazy -> type.unwrappedTypes.first()
+        else -> type
+      }
   val typeName = unwrappedType.asTypeName().withJvmSuppressWildcardsIfNeeded(this, type)
   val resolvedTypeName = if (unwrappedType.isGenericExcludingTypeAliases()) {
     unwrappedType.asClassReferenceOrNull()
@@ -438,88 +480,80 @@ private fun KSPropertyDeclaration.toMemberInjectParameter(
 
   val isWrappedInProvider = qualifiedTypeName == providerFqName.asString()
   val isWrappedInLazy = qualifiedTypeName == daggerLazyFqName.asString()
-  val isLazyWrappedInProvider = isWrappedInProvider &&
-    typeParameters.first().qualifiedName?.asString() == daggerLazyFqName.asString()
+  val isLazyWrappedInProvider =
+      isWrappedInProvider &&
+          typeParameters.first().qualifiedName?.asString() == daggerLazyFqName.asString()
 
-  val unwrappedType = when {
-    isLazyWrappedInProvider -> typeParameters.first().typeParameters.first().toTypeVariableName()
-    isWrappedInProvider || isWrappedInLazy -> typeParameters.first().toTypeVariableName()
-    else -> resolvedType.toTypeName()
-  }
-  /*
-  val typeName = unwrappedType.withJvmSuppressWildcardsIfNeeded(this, type)
-  val resolvedTypeName = if (unwrappedType.isGenericExcludingTypeAliases()) {
-    unwrappedType.asClassReferenceOrNull()
-      ?.asClassName()
-      ?.optionallyParameterizedByNames(
-        unwrappedType.unwrappedTypes.mapNotNull {
-          it.resolveGenericTypeNameOrNull(implementingClass)
+  val unwrappedType =
+      when {
+        isLazyWrappedInProvider ->
+            typeParameters.first().typeParameters.first().toTypeVariableName()
+        isWrappedInProvider || isWrappedInLazy -> typeParameters.first().toTypeVariableName()
+        else -> resolvedType.toTypeName()
+      }
+
+  val typeName =
+      unwrappedType.withJvmSuppressWildcardsIfNeededForPropertyDeclaration(this, resolvedType)
+
+  val providerTypeName = typeName.wrapInProvider()
+
+  val assistedAnnotation = null // annotations.singleOrNull { it.fqName == assistedFqName }
+  val assistedIdentifier = assistedAnnotation?.argumentAt("value", 0)?.value() ?: ""
+
+  val memberInjectorClassName =
+      implementingClass
+          .toClassName()
+          .generateClassName(separator = "_", suffix = "_MembersInjector")
+          .simpleName
+  val memberInjectorClass =
+      ClassName(implementingClass.packageName.asString(), memberInjectorClassName)
+  val fqName = FqName(qualifiedName!!.asString())
+
+  val isSetterInjected = false // this.setterAnnotations.any { it.fqName == injectFqName }
+
+  // setter delegates require a "set" prefix for their inject function
+  val accessName =
+      if (isSetterInjected) {
+        "set${originalName.capitalize()}"
+      } else {
+        originalName
+      }
+
+  val qualifierAnnotations =
+      annotations.toList().filter { it.isQualifier() }.map { it.toAnnotationSpec() }
+
+  val resolvedTypeName = null
+
+  if (unwrappedType is ParameterizedTypeName) {
+        if (unwrappedType.typeArguments.isNotEmpty() ||
+            this.isAnnotationPresent(jvmSuppressWildcardsFqName.asString()) ||
+            resolvedType.isFunctionType) {
+          unwrappedType.jvmSuppressWildcards()
+        } else {
+          null
         }
-      )
-      ?.withJvmSuppressWildcardsIfNeeded(this, unwrappedType)
   } else {
     null
   }
-
-  val assistedAnnotation = annotations.singleOrNull { it.fqName == assistedFqName }
-
-  val assistedIdentifier = assistedAnnotation
-    ?.argumentAt("value", 0)
-    ?.value()
-    ?: ""
-
-  val memberInjectorClassName = declaringClass
-    .generateClassName(separator = "_", suffix = "_MembersInjector")
-    .relativeClassName
-    .asString()
-
-  val memberInjectorClass = ClassName(
-    declaringClass.packageFqName.asString(), memberInjectorClassName
-  )
-
-  val isSetterInjected = this.setterAnnotations.any { it.fqName == injectFqName }
-
-  // setter delegates require a "set" prefix for their inject function
-  val accessName = if (isSetterInjected) {
-    "set${originalName.capitalize()}"
-  } else {
-    originalName
-  }
-
-  val qualifierAnnotations = annotations
-    .filter { it.isQualifier() }
-    .map { it.toAnnotationSpec() }
-
-  val providerTypeName = typeName.wrapInProvider()
-   */
-
-  val assistedAnnotation = null
-  val assistedIdentifier = ""
-  val memberInjectorClass = null
-  val isSetterInjected = null
-  val qualifierAnnotations = null
-  val fqName = null
-  val resolvedTypeName = null
-  val providerTypeName = null
+  
 
   return MemberInjectParameter(
-    name = uniqueName,
-    originalName = originalName,
-    typeName = INT,
-    providerTypeName = providerTypeName!!,
-    lazyTypeName = INT.wrapInLazy(),
-    isWrappedInProvider = isWrappedInProvider,
-    isWrappedInLazy = isWrappedInLazy,
-    isLazyWrappedInProvider = isLazyWrappedInProvider,
-    isAssisted = assistedAnnotation != null,
-    assistedIdentifier = assistedIdentifier,
-    memberInjectorClassName = memberInjectorClass!!,
-    isSetterInjected = isSetterInjected!!,
-    accessName = "accessName",
-    qualifierAnnotationSpecs = qualifierAnnotations!!,
-    injectedFieldSignature = fqName!!,
-    resolvedProviderTypeName = resolvedTypeName?.wrapInProvider() ?: providerTypeName!!
-  )
+      name = uniqueName,
+      originalName = originalName,
+      typeName = typeName,
+      providerTypeName = providerTypeName,
+      lazyTypeName = typeName.wrapInLazy(),
+      isWrappedInProvider = isWrappedInProvider,
+      isWrappedInLazy = isWrappedInLazy,
+      isLazyWrappedInProvider = isLazyWrappedInProvider,
+      isAssisted = assistedAnnotation != null,
+      assistedIdentifier = assistedIdentifier,
+      memberInjectorClassName = memberInjectorClass,
+      isSetterInjected = isSetterInjected,
+      accessName = accessName,
+      qualifierAnnotationSpecs = qualifierAnnotations,
+      injectedFieldSignature = fqName,
+      resolvedProviderTypeName = resolvedTypeName?.wrapInProvider() ?: providerTypeName)
 }
 
 private fun TypeReference.isGenericExcludingTypeAliases(): Boolean {
