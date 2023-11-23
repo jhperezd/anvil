@@ -1,18 +1,27 @@
 package com.squareup.anvil.compiler.codegen.dagger
 
 import com.google.auto.service.AutoService
+import com.google.devtools.ksp.getDeclaredProperties
+import com.google.devtools.ksp.getVisibility
 import com.google.devtools.ksp.processing.Resolver
 import com.google.devtools.ksp.processing.SymbolProcessorEnvironment
 import com.google.devtools.ksp.processing.SymbolProcessorProvider
 import com.google.devtools.ksp.symbol.KSAnnotated
+import com.google.devtools.ksp.symbol.KSClassDeclaration
+import com.google.devtools.ksp.symbol.KSDeclarationContainer
+import com.google.devtools.ksp.symbol.KSFile
+import com.google.devtools.ksp.symbol.KSPropertyDeclaration
+import com.google.devtools.ksp.symbol.Visibility as KspVisibility
 import com.squareup.anvil.compiler.api.AnvilApplicabilityChecker
 import com.squareup.anvil.compiler.api.AnvilContext
 import com.squareup.anvil.compiler.api.CodeGenerator
+import com.squareup.anvil.compiler.api.GeneratedFile
 import com.squareup.anvil.compiler.api.createGeneratedFile
 import com.squareup.anvil.compiler.codegen.PrivateCodeGenerator
 import com.squareup.anvil.compiler.codegen.injectConstructor
 import com.squareup.anvil.compiler.codegen.ksp.AnvilSymbolProcessor
 import com.squareup.anvil.compiler.codegen.ksp.AnvilSymbolProcessorProvider
+import com.squareup.anvil.compiler.codegen.ksp.isAnnotationPresent
 import com.squareup.anvil.compiler.injectFqName
 import com.squareup.anvil.compiler.internal.asClassName
 import com.squareup.anvil.compiler.internal.createAnvilSpec
@@ -32,6 +41,9 @@ import com.squareup.kotlinpoet.TypeSpec
 import com.squareup.kotlinpoet.TypeVariableName
 import com.squareup.kotlinpoet.asClassName
 import com.squareup.kotlinpoet.jvm.jvmStatic
+import com.squareup.kotlinpoet.ksp.toClassName
+import com.squareup.kotlinpoet.ksp.toTypeVariableName
+import com.squareup.kotlinpoet.ksp.writeTo
 import dagger.internal.Factory
 import java.io.File
 import org.jetbrains.kotlin.descriptors.ModuleDescriptor
@@ -42,13 +54,13 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
   override fun isApplicable(context: AnvilContext) = context.generateFactories
 
   fun generateFactoryClass(
-      originClass: ClassName,
+      clazz: ClassName,
       typeParameters: List<TypeVariableName>,
       constructorParameters: List<ConstructorParameter>,
       memberInjectParameters: List<MemberInjectParameter>,
   ): FileSpec {
-    val classId = originClass.generateClassName(suffix = "_Factory").asClassId()
-    val packageName = originClass.packageName.safePackageString()
+    val classId = clazz.generateClassName(suffix = "_Factory").asClassId()
+    val packageName = clazz.packageName.safePackageString()
     val className = classId.relativeClassName.asString()
 
     val allParameters = constructorParameters + memberInjectParameters
@@ -58,8 +70,7 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
         else factoryClass
 
     val classType =
-        if (typeParameters.isNotEmpty()) originClass.parameterizedBy(typeParameters)
-        else originClass
+        if (typeParameters.isNotEmpty()) clazz.parameterizedBy(typeParameters) else clazz
 
     return FileSpec.createAnvilSpec(packageName, className) {
       val canGenerateAnObject = allParameters.isEmpty() && typeParameters.isEmpty()
@@ -160,7 +171,7 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
           .build()
           .let { addType(it) }
     }
-  }
+  } // generateFactoryClass
 
   internal class KspGenerator(
       override val env: SymbolProcessorEnvironment,
@@ -171,9 +182,95 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
         AnvilSymbolProcessorProvider(InjectConstructorFactoryGenerator, ::KspGenerator)
 
     override fun processChecked(resolver: Resolver): List<KSAnnotated> {
+      val tmp = resolver.getSymbolsWithAnnotation(injectFqName.toString()).toList()
+        .mapNotNull { annotated ->
+          when {
+            annotated !is KSPropertyDeclaration -> {
+              env.logger.error(
+                "Filtering out PropertyDeclarations only", annotated
+              )
+              return@mapNotNull null
+            }
+            else -> annotated
+          }
+        }
+      val files = resolver.getAllFiles()
+      files.forEach { file ->
+        env.logger.info("Checking file: ${file.filePath}")
+        val declarations = file.declarations
+        declarations.forEach { clazz -> //KSClassDeclarationImpl
+          env.logger.info("Checking Class: ${clazz.qualifiedName?.asString()}")
+
+          // Only generate a MembersInjector if the target class declares its own member-injected
+          // properties. If it does, then any properties from superclasses must be added as well
+          // (clazz.memberInjectParameters() will do this).
+          //val hasInjectableProperties =
+          //    clazz
+          //        .getDeclaredProperties()
+          //        .filter { it.getVisibility() != KspVisibility.PRIVATE }
+          //        .any { it.isAnnotationPresent(injectFqName.asString()) }
+
+          if (true) {
+
+            val typeParameters = clazz.typeParameters.map { it.toTypeVariableName() }
+            val constructorParameters = emptyList<ConstructorParameter>()
+            val memberInjectParameters = emptyList<MemberInjectParameter>()
+            val classId = (clazz as KSClassDeclaration)
+              .toClassName()
+              .generateClassName(separator = "_", suffix = "_Factory")
+              .asClassId()
+              //.generateClassName(separator, suffix).asClassId()
+            val className = classId.relativeClassName.asString()
+
+            val spec =
+              generateFactoryClass(
+                clazz = (clazz as KSClassDeclaration).toClassName(),
+                typeParameters = typeParameters,
+                constructorParameters = constructorParameters,
+                memberInjectParameters = memberInjectParameters,
+                )
+
+            //createGeneratedFile(env.codeGenerator.)
+            spec.writeTo(
+              env.codeGenerator,
+              aggregating = false,
+              originatingKSFiles = listOf(file),
+              )
+          }
+        }
+      }
       return emptyList()
     }
-  }
+
+    private fun createGeneratedFile(
+      codeGenDir: File,
+      packageName: String,
+      fileName: String,
+      content: String,
+    ): GeneratedFile {
+      val directory = File(codeGenDir, packageName.replace('.', File.separatorChar))
+      val file = File(directory, "$fileName.kt")
+      check(file.parentFile.exists() || file.parentFile.mkdirs()) {
+        "Could not generate package directory: ${file.parentFile}"
+      }
+      file.writeText(content)
+
+      return GeneratedFile(file, content)
+    }
+    private fun KSFile.forEachClassDeclaration(action: (KSClassDeclaration) -> Unit) {
+
+      fun KSDeclarationContainer.getClassDeclarations(): Sequence<KSClassDeclaration> {
+        return declarations.filterIsInstance<KSClassDeclaration>().flatMap { clazz ->
+          sequence {
+            yield(clazz)
+            yieldAll(clazz.getClassDeclarations())
+          }
+        }
+      }
+
+      getClassDeclarations().forEach(action)
+    }
+  } // KSP
 
   @AutoService(CodeGenerator::class)
   internal class EmbeddedGenerator : PrivateCodeGenerator() {
@@ -191,7 +288,6 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
             .injectConstructor()
             ?.takeIf { it.isAnnotatedWith(injectFqName) }
             ?.let {
-
               val classId = clazz.generateClassName(suffix = "_Factory")
               val packageName = classId.packageFqName.safePackageString()
               val className = classId.relativeClassName.asString()
@@ -209,5 +305,5 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
             }
       }
     }
-  }
+  } // Embedded
 }
