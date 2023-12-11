@@ -189,7 +189,7 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
     class Provider : AnvilSymbolProcessorProvider(InjectConstructorFactoryGenerator, ::KspGenerator)
 
     override fun processChecked(resolver: Resolver): List<KSAnnotated> {
-      resolver.getSymbolsWithAnnotation(injectFqName.toString())
+      resolver.getSymbolsWithAnnotation(injectFqName.toString()) // (resolver.getAllFiles().first().declarations.toList()[0] as KSClassDeclaration).primaryConstructor.isAnnotationPresent( injectFqName.toString()) // returns true just for the first one!
         .mapNotNull { annotated ->
           when {
             annotated !is KSFunctionDeclaration -> {
@@ -208,14 +208,17 @@ internal object InjectConstructorFactoryGenerator : AnvilApplicabilityChecker {
           val valueParameters = item.parameters
           val typeParameters = clazz.typeParameters
 
-          //Generate TypeParameters
+          //Generate TypeParameters (resolver.getAllFiles().first().declarations.toList()[0] as KSClassDeclaration).typeParameters.map { it.toTypeVariableName() }
           val tp = typeParameters.map { it.toTypeVariableName() }
 
-          //Generate Parameter (AKA ConstructorParameters)
+          //Generate Parameter (AKA ConstructorParameters) (resolver.getAllFiles().first().declarations.toList()[0] as KSClassDeclaration).primaryConstructor.parameters.mapKSPToConstructorParameters()
           val cp = valueParameters.mapKSPToConstructorParameters()
-
-          //Generate Property (AKA MemberInjectParameters)
-          val mip = clazz.memberInjectParameters()
+/*
+(((resolver.getAllFiles().first().declarations.toList()[0] as KSClassDeclaration).getAllSuperTypes().first().declaration as KSClassDeclaration).getAllSuperTypes().first().declaration as KSClassDeclaration).getAllSuperTypes().toList()
+// The above works!!!! use getAllProperties to accumulate the properties!!!!
+ */ // // Get all properties as we crawl the list till we find "Any" as the super. Then dedup starting from newest (i.e. replace with higher up in supers)
+          //Generate Property (AKA MemberInjectParameters) (resolver.getAllFiles().first().declarations.toList()[0] as KSClassDeclaration).memberInjectParameters()
+          val mip = clazz.memberInjectParameters() // resolver.getSymbolsWithAnnotation(injectFqName.asString()).toList().filterIsInstance<KSPropertyDeclaration>()[0] This returns KSPropertyDeclarations, which we may just be able to parse?
 
           val spec = generateFactoryClass(clazz.toClassName(), tp, cp, mip)
 

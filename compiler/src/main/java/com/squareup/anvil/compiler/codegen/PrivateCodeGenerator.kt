@@ -18,7 +18,7 @@ internal abstract class PrivateCodeGenerator : CodeGenerator {
     module: ModuleDescriptor,
     projectFiles: Collection<KtFile>
   ): Collection<GeneratedFile> {
-    generateCodePrivate(codeGenDir, module, projectFiles)
+    generateCodePrivate(codeGenDir, module, projectFiles) // JP - What is this about? it prints more files?! jumps to MembersInjectorGenerator.generateCodePrivate()
     return emptyList()
   }
 
